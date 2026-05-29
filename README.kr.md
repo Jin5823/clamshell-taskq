@@ -1,5 +1,12 @@
 # clamshell-taskq
 
+[English](README.md) · [한국어](README.kr.md)
+
+[![CI](https://github.com/Jin5823/clamshell-taskq/actions/workflows/ci.yml/badge.svg)](https://github.com/Jin5823/clamshell-taskq/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Jin5823/clamshell-taskq)](go.mod)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Jin5823/clamshell-taskq)](https://goreportcard.com/report/github.com/Jin5823/clamshell-taskq)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **뚜껑(clamshell)을 닫고 sleep 상태로 두는 시간이 긴 맥북에서, 5분마다 백그라운드 작업을 처리하기 위한 도구입니다.** 노트북이 5분마다 스스로 깨어나 Slack 채널에 쌓인 일을 가져와 명령을 실행한 뒤 다시 잠듭니다.
 
 ("Clamshell"은 Apple이 "뚜껑이 닫힌 노트북"을 부르는 용어로, 이 도구가 설계 대상으로 삼는 동작 모드입니다.)
@@ -8,6 +15,20 @@
 - **`runner`** — 노트북에서 짧게 실행되고 곧바로 종료됩니다. `launchd` 와 `pmset` 이 협업해 5분마다 호출합니다. task 채널의 최신 메시지에 reaction이 없으면 `$COMMAND` 를 백그라운드(detached)로 실행한 뒤 종료합니다.
 
 Slack 채널 자체가 큐입니다. `⏳` · `✅` · `❌` 세 가지 reaction이 작업의 상태를 표현합니다. 별도의 DB나 `server` ↔ `runner` 간 HTTP 통신은 없습니다.
+
+```mermaid
+flowchart TD
+    A["사용자가 아무 채널에서 봇을 @멘션"] --> S["server · 24/7 호스트 · Slack Socket Mode"]
+    S -->|"멘션 전달"| Q["task-queue 채널 · 큐"]
+
+    subgraph Mac["MacBook · 대부분 뚜껑 닫고 잠든 상태"]
+      W["launchd + pmset · 5분마다 wake"] --> R["runner · 짧게 실행"]
+    end
+
+    Q -.->|"최신 메시지가 미처리?"| R
+    R -->|"맞으면 → detached 실행"| C["$COMMAND · 핸들러 · caffeinate -i"]
+    C -->|"작업 후 reaction ⏳ → ✅ / ❌"| Q
+```
 
 ---
 

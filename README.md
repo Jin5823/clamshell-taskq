@@ -1,5 +1,12 @@
 # clamshell-taskq
 
+[English](README.md) · [한국어](README.kr.md)
+
+[![CI](https://github.com/Jin5823/clamshell-taskq/actions/workflows/ci.yml/badge.svg)](https://github.com/Jin5823/clamshell-taskq/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Jin5823/clamshell-taskq)](go.mod)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Jin5823/clamshell-taskq)](https://goreportcard.com/report/github.com/Jin5823/clamshell-taskq)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Run background tasks on a MacBook that's mostly closed-lid and sleeping.** The laptop wakes itself every 5 minutes, picks up pending work from a Slack channel, runs your command, and goes back to sleep.
 
 ("Clamshell" is Apple's term for "laptop with the lid closed" — the mode this tool is built around.)
@@ -8,6 +15,20 @@
 - **`runner`** (short-lived, on your laptop) is invoked every 5 minutes by `launchd` + `pmset` wake. If the latest task-channel message has no reaction yet, it spawns `$COMMAND` detached and exits.
 
 The Slack channel itself is the queue. Reactions (`⏳`/`✅`/`❌`) are the state. No database. No HTTP between server and runner.
+
+```mermaid
+flowchart TD
+    A["User @mentions the bot in any channel"] --> S["server · 24/7 host · Slack Socket Mode"]
+    S -->|"forwards the mention"| Q["task-queue channel · the queue"]
+
+    subgraph Mac["MacBook · mostly closed-lid and asleep"]
+      W["launchd + pmset · wake every 5 min"] --> R["runner · short-lived"]
+    end
+
+    Q -.->|"latest message unhandled?"| R
+    R -->|"if yes → spawn detached"| C["$COMMAND · your handler · caffeinate -i"]
+    C -->|"do the work, then react ⏳ → ✅ / ❌"| Q
+```
 
 ---
 
