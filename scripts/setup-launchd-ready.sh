@@ -78,7 +78,14 @@ set -a
 source "$ENV_FILE"
 set +a
 "$RUNNER_BIN"
-/usr/bin/sudo /usr/bin/pmset schedule wake "\$(date -v+5M -v0S -v-2S '+%m/%d/%Y %H:%M:%S')"
+# Re-arm the next cycle by bracketing the boundary with several wakes
+# (-10/-5/0/+5/+10s). A short battery dark wake often fails to run launchd at a
+# single instant, so give it multiple shots around the boundary -- including
+# +5/+10s, where the job is already overdue and launchd runs it on the wake
+# itself (the more reliable path).
+for off in -10 -5 0 +5 +10; do
+    /usr/bin/sudo /usr/bin/pmset schedule wake "\$(date -v+5M -v0S -v\${off}S '+%m/%d/%Y %H:%M:%S')"
+done
 EOF
 chmod 700 "$RUN_SCRIPT"
 echo "    wrote    $RUN_SCRIPT"
