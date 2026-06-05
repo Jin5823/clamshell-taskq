@@ -7,19 +7,20 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/Jin5823/clamshell-taskq)](https://goreportcard.com/report/github.com/Jin5823/clamshell-taskq)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Run background tasks on a MacBook that's mostly closed-lid and sleeping.** The laptop wakes itself every 5 minutes, picks up pending work from a Slack channel, runs your command, and goes back to sleep.
+**Run background tasks on a MacBook that's mostly closed and asleep.** The laptop wakes itself every 5 minutes, picks up pending work from a Slack channel, runs your command, and goes back to sleep.
 
 ("Clamshell" is Apple's term for "laptop with the lid closed" — the mode this tool is built around.)
 
-- **`server`** (long-running, on a 24/7 host) forwards Slack mentions into a single "task" channel.
-- **`runner`** (short-lived, on your laptop) is invoked every 5 minutes by `launchd` + `pmset` wake. If the latest task-channel message has no reaction yet, it spawns `$COMMAND` detached and exits.
+The Slack channel itself is the queue, and **anything that can post to it enqueues work** — you typing a message, a `/remind`, a Slack Workflow, or the optional `server`. Reactions (`⏳`/`✅`/`❌`) are the state. No database; the runner only ever reads the channel.
 
-The Slack channel itself is the queue. Reactions (`⏳`/`✅`/`❌`) are the state. No database. No HTTP between server and runner.
+- **`runner`** (required, on your laptop) — invoked every 5 minutes by `launchd` + `pmset` wake. If the latest task-channel message carries no `⏳`/`✅`/`❌` reaction yet, it spawns `$COMMAND` detached and exits.
+- **`server`** (optional, on any always-on host) — forwards a Slack @mention from any channel into the task channel, so work lands the instant you @mention the bot. Skip it entirely if scheduled posts (`/remind`, Workflow) are all you need.
 
 ```mermaid
 flowchart TD
-    A["User @mentions the bot in any channel"] --> S["server · 24/7 host · Slack Socket Mode"]
-    S -->|"forwards the mention"| Q["task-queue channel · the queue"]
+    F["you typing · /remind · Slack Workflow"] -->|"post a message"| Q["task-queue channel · the queue"]
+    A["@mention the bot in any channel"] --> S["server · optional · always-on · Socket Mode"]
+    S -->|"forwards the mention"| Q
 
     subgraph Mac["MacBook · mostly closed-lid and asleep"]
       W["launchd + pmset · wake every 5 min"] --> R["runner · short-lived"]
@@ -67,6 +68,8 @@ At https://api.slack.com/apps:
    - `chat:write`
    - `reactions:write`
    - `channels:history`
+
+   *Who uses what:* `app_mentions:read` + `chat:write` → the server; `channels:history` → the runner; `reactions:write` (+ `chat:write` for thread replies) → your `$COMMAND` handler. If your queue channel is **private**, use `groups:history` instead of `channels:history`.
 5. **Install to Workspace** → copy Bot Token → `SLACK_BOT_TOKEN` (`xoxb-...`).
 6. **Event Subscriptions** → subscribe to `app_mention`.
 7. Create a channel that will act as the queue (e.g. `#task-queue`). Copy its ID → `SLACK_TASK_CHANNEL` (`C0123...`).
@@ -78,9 +81,13 @@ At https://api.slack.com/apps:
 
 ---
 
-## Server (always-on host)
+## Server (optional)
 
-Drop the binary on a 24/7 host with env vars loaded:
+The server does one job: the moment you @mention the bot in any channel, it forwards that message into the task channel. That's the **reactive** path — hand off work on the spot, no schedule. It's entirely optional; if `/remind` and Slack Workflows cover you, skip it, since the runner only ever reads the channel.
+
+It's a tiny always-on process, so a cheap VPS or a free-tier host is plenty. (A serverless version may come later.)
+
+Drop the binary on any always-on host with env vars loaded:
 
 ```bash
 cp .env.example .env
@@ -96,7 +103,7 @@ Socket Mode keeps an outbound WebSocket open, so no inbound port or public URL i
 
 ## Runner (macOS)
 
-> Linux / Windows: coming.
+> Linux / Windows: coming soon.
 
 ### 1. Install the binary
 
@@ -118,11 +125,11 @@ Prompts for your sudo password **once**, then installs `/etc/sudoers.d/clamshell
 ./scripts/setup-launchd-ready.sh
 ```
 
-Creates `~/.clamshell-taskq/` with a `.env` placeholder and the `run.sh` wrapper, and writes the LaunchAgent plist. **The schedule is not active yet.**
+Creates `~/.clamshell-taskq/`, writes the `run.sh` wrapper and the LaunchAgent plist (after checking that the runner binary is installed and the sudoers rule works). It does **not** write `.env` — you copy that in yourself in the next step. **The schedule is not active yet.**
 
 ### 4. Copy your `.env` into place
 
-Write a `.env` in the repo (see [`.env.example`](.env.example) for the shape), then copy it into the runner's directory:
+Write a `.env` in the repo (see [`.env.example`](.env.example) for the format), then copy it into the runner's directory:
 
 ```bash
 cp .env ~/.clamshell-taskq/.env
@@ -134,7 +141,7 @@ The file must define:
 ```
 SLACK_BOT_TOKEN=xoxb-...
 SLACK_TASK_CHANNEL=C0123456789
-COMMAND="/usr/local/bin/python3 /Users/me/handlers/main.py"
+COMMAND="/usr/bin/caffeinate -i /usr/local/bin/python3 /Users/me/handlers/main.py"
 ```
 
 ### 5. Activate the schedule
@@ -145,13 +152,15 @@ COMMAND="/usr/local/bin/python3 /Users/me/handlers/main.py"
 
 Loads the LaunchAgent. The plist has `RunAtLoad=true`, so launchd fires the runner immediately, which kicks off the wake chain (each `run.sh` invocation registers the next wake before exiting). From this point the runner repeats every 5 minutes.
 
+Under the hood, `run.sh` wraps each cycle in `caffeinate -i` and arms several `pmset` wakes bracketing the next 5-minute mark (roughly -10s to +10s around it), so a short, unstable dark wake is less likely to drop the chain.
+
 ### What gets installed where
 
 | Path | Owned by | Purpose |
 |---|---|---|
 | `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `NOPASSWD` for `pmset schedule wake *` only |
-| `~/.clamshell-taskq/.env` | `setup-launchd-ready.sh` | your tokens + `$COMMAND` |
-| `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | wrapper: source env → run runner → re-arm next wake |
+| `~/.clamshell-taskq/.env` | you (step 4, `cp`) | your tokens + `$COMMAND` |
+| `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | wrapper: `caffeinate` the cycle → load env → run runner → re-arm the next wake(s) |
 | `~/Library/LaunchAgents/com.clamshell-taskq.runner.plist` | `setup-launchd-ready.sh` | `RunAtLoad` + `StartCalendarInterval` at `:00, :05, …, :55` |
 | `~/.clamshell-taskq/launchd.{out,err}.log` | launchd | launchd-captured runner output |
 
@@ -169,35 +178,76 @@ tail -f ~/.clamshell-taskq/launchd.{out,err}.log
 launchctl unload ~/Library/LaunchAgents/com.clamshell-taskq.runner.plist
 rm ~/Library/LaunchAgents/com.clamshell-taskq.runner.plist
 sudo rm /etc/sudoers.d/clamshell-pmset
+sudo rm /usr/local/bin/clamshell-runner
 sudo pmset schedule cancelall
 # rm -rf ~/.clamshell-taskq                    # also wipes env/logs
 ```
 
 ---
 
+## Enqueuing tasks
+
+A "task" is just a message in the task channel, so **anything that can post there enqueues work** — and the next runner cycle picks up any unhandled message and fires `$COMMAND`. That channel is the entire interface; nothing is special about who posts or how.
+
+Two flavors, depending on the work:
+
+- **Scheduled / recurring — nothing always-on of your own to run.** Let Slack itself post into the task channel on a timer (table below). This is the common case.
+- **Reactive / instant — the optional [`server`](#server-optional).** @mention the bot in any channel and it forwards the message into the task channel right away. Use it only when you want that immediacy.
+
+### Scheduling recurring tasks
+
+Slack already knows how to post messages on a schedule — let it be your cron. Pick the tool that matches the cadence you need:
+
+| Cadence | Tool | How |
+|---|---|---|
+| Daily / weekly, at a set time | `/remind` | Run `/remind` **in the task channel** and it lands straight in the queue — e.g. `/remind here to "run the daily check" every day at 9am`. (Run it elsewhere with an `@your-bot` mention and the optional server forwards it instead.) |
+| Down to the hour | **Slack Workflow** | `/remind` can't recur more often than daily. Build a Workflow (Workflow Builder → *Scheduled* trigger) whose step posts the task message into the task channel. |
+| Down to the minute | **Your own server / cron** | Slack's built-in schedulers don't go that fine. Run a small always-on job that posts into the task channel on a minute-level cron. |
+
+> The runner wakes every 5 minutes, so that's the floor for *processing*: minute-level enqueues just pile up and get cleared on the next wake (the handler drains every pending message each run).
+
+**Workflows aren't just for schedules.** A Slack Workflow can also fire on an *event* — a specific message appearing in some channel, an emoji reaction, a form submission — and post into the task channel in response. That's reactive enqueuing with no server of your own to run.
+
+---
+
 ## `$COMMAND` contract
 
-The runner only checks the latest message and triggers once. The command itself owns the full processing loop:
+The runner fires once on the latest unhandled message; **your command owns the whole loop.** Reactions in the channel are the only state, and the runner can fire again at any time — so write the handler to be **safe to re-run**: idempotent and crash-safe. The proven shape has three phases:
 
-1. **List pending messages** in the task channel via `conversations.history` (paginated). Pending = no `⏳`, `✅`, or `❌` reaction.
-2. **For each pending message**:
-   - Add `⏳` (`hourglass_flowing_sand`) **first** — prevents the next runner cycle from re-triggering.
-   - Do the work.
-   - On success → add `✅` (`white_check_mark`).
-   - On failure → add `❌` (`x`), optionally reply in-thread with the error.
+1. **Collect pending — newest to oldest, stop at the first handled message.** Page back through `conversations.history`. A message is *handled* if it already carries any of `⏳` / `✅` / `❌`; the moment you hit one, everything older is done too (FIFO) — stop. Skip system messages (those with a `subtype`).
+2. **Claim everything with `⏳` first.** Before doing any work, add `⏳` (`hourglass_flowing_sand`) to every collected message. Now the next runner cycle sees them as handled and won't double-grab them.
+3. **Process oldest first, and remove `⏳` last.** For each: do the work, post the result in-thread, add the terminal reaction (`✅` `white_check_mark` on success, `❌` `x` on failure), **then** remove `⏳`. Always reach a terminal reaction — catch your errors and mark `❌` rather than letting a message fall through.
 
-Sketch (Python):
+Two rules make it crash-safe:
+
+- **Remove `⏳` last.** If the process dies right after the terminal reaction or just before removing `⏳`, the message still shows a handled reaction (`⏳`, or `✅`/`❌`), so the next cycle skips it — no duplicate work or replies. A brief `⏳`+`✅` overlap is normal.
+- **Make every Slack call idempotent.** A re-run touches the same message again, so swallow the "already done" errors: `already_reacted` when adding, `no_reaction` / `message_not_found` when removing, `cannot_reply_to_message` / `thread_not_found` when replying.
+
+Sketch (Python, `slack_sdk`):
 
 ```python
-for msg in list_pending(channel):
-    add_reaction(msg.ts, "hourglass_flowing_sand")
+RUNNING, DONE, FAILED = "hourglass_flowing_sand", "white_check_mark", "x"
+HANDLED = {RUNNING, DONE, FAILED}
+
+pending = collect_pending(client, channel)   # newest→oldest, stop at first HANDLED, skip subtypes
+for msg in pending:                          # claim all up front
+    add_reaction(client, channel, msg["ts"], RUNNING)
+
+for msg in reversed(pending):                # oldest first
+    ts = msg["ts"]
     try:
         do_work(msg)
-        add_reaction(msg.ts, "white_check_mark")
     except Exception as e:
-        add_reaction(msg.ts, "x")
-        post_thread_reply(msg.ts, f"failed: {e}")
+        post_thread(client, channel, ts, f"failed: {e}")
+        add_reaction(client, channel, ts, FAILED)
+        remove_reaction(client, channel, ts, RUNNING)   # ⏳ comes off last
+        continue
+    post_thread(client, channel, ts, "done")
+    add_reaction(client, channel, ts, DONE)
+    remove_reaction(client, channel, ts, RUNNING)        # ⏳ comes off last
 ```
+
+`add_reaction` / `remove_reaction` / `post_thread` here are thin wrappers that ignore the "already done" errors above, so a re-run never crashes on a message it already touched.
 
 `launchd` does not inherit your shell PATH, so use absolute paths for the interpreter and the script. **Wrap the command with `caffeinate -i`** — after a `pmset` wake the Mac is in dark wake with a short idle timer (often under a minute), so without `caffeinate` a long-running command can get cut off when macOS idles back to sleep mid-task.
 
@@ -216,7 +266,7 @@ COMMAND="/usr/bin/caffeinate -i /usr/local/bin/python3 /Users/me/handlers/main.p
 
 ## Honest limits
 
-- **macOS itself does not guarantee** every scheduled wake fires under every combination of (lid closed, on battery, deep sleep). M-series + macOS 26.x have rare firmware sleep hangs reported. Expect **most** 5-minute cycles to fire when closed-lid + sleeping; a missed cycle just means the work waits for the next one.
+- **macOS itself does not guarantee** every scheduled wake fires under every combination of conditions — lid closed, on battery, deep sleep. There are scattered reports of firmware sleep hangs on M-series Macs running macOS 26.x. Expect **most** 5-minute cycles to fire when closed and asleep; a missed cycle just means the work waits for the next one.
 - Missed wakes are not lost work: the Slack channel is the queue, so the next cycle catches up on whatever piled up.
 
 ## License
