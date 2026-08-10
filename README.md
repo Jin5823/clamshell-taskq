@@ -11,16 +11,16 @@
 
 ("Clamshell" is Apple's term for "laptop with the lid closed" — the mode this tool is built around.)
 
-The Slack channel itself is the queue, and **anything that can post to it enqueues work** — you typing a message, a `/remind`, a Slack Workflow, or the optional `server`. Reactions (`⏳`/`✅`/`❌`) are the state. No database; the runner only ever reads the channel.
+The Slack channel itself is the queue, and **anything that can post to it enqueues work** — you typing a message, or a Slack Workflow forwarding one in. Reactions (`⏳`/`✅`/`❌`) are the state. No database, and **nothing of yours runs anywhere but the laptop**.
 
-- **`runner`** (required, on your laptop) — invoked every 5 minutes by `launchd` + `pmset` wake. If the latest task-channel message carries no `⏳`/`✅`/`❌` reaction yet, it spawns `$COMMAND` detached and exits.
-- **`server`** (optional, on any always-on host) — forwards a Slack @mention from any channel into the task channel, so work lands the instant you @mention the bot. Skip it entirely if scheduled posts (`/remind`, Workflow) are all you need.
+- **`runner`** (the only binary, on your laptop) — invoked every 5 minutes by `launchd` + `pmset` wake. If the latest task-channel message carries no `⏳`/`✅`/`❌` reaction yet, it spawns `$COMMAND` detached and exits.
+- **A Slack Workflow** (no code, no host, no app-level token) — watches the channels you pick and forwards matching messages into the task channel. That is the entire ingest path: work fans in from anywhere, centrally, without you running a service.
 
 ```mermaid
 flowchart TD
-    F["you typing · /remind · Slack Workflow"] -->|"post a message"| Q["task-queue channel · the queue"]
-    A["@mention the bot in any channel"] --> S["server · optional · always-on · Socket Mode"]
-    S -->|"forwards the mention"| Q
+    F["you typing in the task channel"] -->|"post a message"| Q["task-queue channel · the queue"]
+    A["a matching message in a watched channel"] --> S["Slack Workflow · runs inside Slack"]
+    S -->|"forwards it"| Q
 
     subgraph Mac["MacBook · mostly closed-lid and asleep"]
       W["launchd + pmset · wake every 5 min"] --> R["runner · short-lived"]
@@ -36,20 +36,12 @@ flowchart TD
 ## Build
 
 ```bash
-go build -o bin/server ./cmd/server
 go build -o bin/runner ./cmd/runner
 ```
 
-Cross-compile (Go does this with env vars only — no toolchain install needed):
+Cross-compile (Go does this with env vars only — no toolchain install needed). Unix-like only, since the runner relies on POSIX session APIs:
 
 ```bash
-# server
-GOOS=linux   GOARCH=amd64 go build -o bin/server-linux-amd64       ./cmd/server
-GOOS=linux   GOARCH=arm64 go build -o bin/server-linux-arm64       ./cmd/server
-GOOS=darwin  GOARCH=arm64 go build -o bin/server-darwin-arm64      ./cmd/server
-GOOS=windows GOARCH=amd64 go build -o bin/server-windows-amd64.exe ./cmd/server
-
-# runner (Unix-like only — relies on POSIX session APIs)
 GOOS=darwin GOARCH=arm64 go build -o bin/runner-darwin-arm64 ./cmd/runner
 GOOS=linux  GOARCH=amd64 go build -o bin/runner-linux-amd64  ./cmd/runner
 ```
@@ -61,43 +53,44 @@ GOOS=linux  GOARCH=amd64 go build -o bin/runner-linux-amd64  ./cmd/runner
 At https://api.slack.com/apps:
 
 1. **Create New App** → from scratch.
-2. **Socket Mode** → enable.
-3. **App-Level Tokens** → create one with scope `connections:write` → `SLACK_APP_TOKEN` (`xapp-...`).
-4. **OAuth & Permissions → Bot Token Scopes**:
-   - `app_mentions:read`
+2. **OAuth & Permissions → Bot Token Scopes**:
+   - `channels:history`
    - `chat:write`
    - `reactions:write`
-   - `channels:history`
 
-   *Who uses what:* `app_mentions:read` + `chat:write` → the server; `channels:history` → the runner; `reactions:write` (+ `chat:write` for thread replies) → your `$COMMAND` handler. If your queue channel is **private**, use `groups:history` instead of `channels:history`.
-5. **Install to Workspace** → copy Bot Token → `SLACK_BOT_TOKEN` (`xoxb-...`).
-6. **Event Subscriptions** → subscribe to `app_mention`.
-7. Create a channel that will act as the queue (e.g. `#task-queue`). Copy its ID → `SLACK_TASK_CHANNEL` (`C0123...`).
-8. Invite the bot into the task channel **and** any channel you want to trigger it from:
+   *Who uses what:* `channels:history` → the runner; `reactions:write` + `chat:write` → your `$COMMAND` handler. If your queue channel is **private**, use `groups:history` instead of `channels:history`.
+3. **Install to Workspace** → copy Bot Token → `SLACK_BOT_TOKEN` (`xoxb-...`).
+4. Create a channel that will act as the queue (e.g. `#task-queue`). Copy its ID → `SLACK_TASK_CHANNEL` (`C0123...`).
+5. Invite the bot into the task channel — and **only** the task channel:
 
    ```
    /invite @your-bot-name
    ```
 
+No Socket Mode, no app-level token, no Event Subscriptions, and the bot never needs to sit in the channels you throw work from. The token lives on your laptop and nowhere else.
+
 ---
 
-## Server (optional)
+## Getting work into the queue (Slack Workflow)
 
-The server does one job: the moment you @mention the bot in any channel, it forwards that message into the task channel. That's the **reactive** path — hand off work on the spot, no schedule. It's entirely optional; if `/remind` and Slack Workflows cover you, skip it, since the runner only ever reads the channel.
+Anything that posts into the task channel enqueues work, so the simplest task is one you type there yourself. To fan work in from *other* channels, use a **Slack Workflow** — it runs inside Slack, so there is no host to keep alive and no second copy of your token.
 
-It's a tiny always-on process, so a cheap VPS or a free-tier host is plenty. (A serverless version may come later.)
+In Workflow Builder → **New** → **Build Workflow**:
 
-Drop the binary on any always-on host with env vars loaded:
+1. **Choose an event → "When a message is posted."** Pick the channels to watch (up to 20) and add a keyword condition.
+2. **Add Step → "Send a message"** → the task channel, with the message-text variable as the content.
+3. **Finish Up → Publish.** Nothing fires until it is published.
 
-```bash
-cp .env.example .env
-# fill in SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_TASK_CHANNEL
+For recurring work, build the same thing with the **"On a schedule"** trigger instead — that covers daily/hourly jobs without anything of yours running.
 
-set -a; source .env; set +a
-./bin/server
-```
+### Four things that will bite you
 
-Socket Mode keeps an outbound WebSocket open, so no inbound port or public URL is needed.
+- **Keywords cannot be @mentions.** Slack stores a real mention as `<@U0123ABC>`, so a keyword typed as `@your-bot` matches nothing — the display name is not in the message text. If you want "tag the bot" to be the trigger, paste the raw `<@U0123ABC>` form in as the keyword. Otherwise pick a plain codeword.
+- **Keywords are ANDed.** Every keyword you add must appear. One over-specific keyword silently blocks everything else.
+- **Leave the task channel out of the watched list.** A workflow that both watches and posts to the same channel will trigger itself forever.
+- **Don't prefix the forwarded text.** If your handler parses the message for a tag, a hardcoded prefix in the message step gets parsed instead of the user's. Send the variable alone.
+
+Also note that **Advanced Filters exclude bot/agent messages and thread replies by default** — open them up if you want another app's posts to trigger the workflow.
 
 ---
 
@@ -187,26 +180,9 @@ sudo pmset schedule cancelall
 
 ## Enqueuing tasks
 
-A "task" is just a message in the task channel, so **anything that can post there enqueues work** — and the next runner cycle picks up any unhandled message and fires `$COMMAND`. That channel is the entire interface; nothing is special about who posts or how.
+A "task" is just a message in the task channel, so **anything that can post there enqueues work** — and the next runner cycle picks up any unhandled message and fires `$COMMAND`. That channel is the entire interface; nothing is special about who posts or how. Type one in yourself, or let a [Workflow](#getting-work-into-the-queue-slack-workflow) forward one in for you.
 
-Two flavors, depending on the work:
-
-- **Scheduled / recurring — nothing always-on of your own to run.** Let Slack itself post into the task channel on a timer (table below). This is the common case.
-- **Reactive / instant — the optional [`server`](#server-optional).** @mention the bot in any channel and it forwards the message into the task channel right away. Use it only when you want that immediacy.
-
-### Scheduling recurring tasks
-
-Slack already knows how to post messages on a schedule — let it be your cron. Pick the tool that matches the cadence you need:
-
-| Cadence | Tool | How |
-|---|---|---|
-| Daily / weekly, at a set time | `/remind` | Run `/remind` **in the task channel** and it lands straight in the queue — e.g. `/remind here to "run the daily check" every day at 9am`. (Run it elsewhere with an `@your-bot` mention and the optional server forwards it instead.) |
-| Down to the hour | **Slack Workflow** | `/remind` can't recur more often than daily. Build a Workflow (Workflow Builder → *Scheduled* trigger) whose step posts the task message into the task channel. |
-| Down to the minute | **Your own server / cron** | Slack's built-in schedulers don't go that fine. Run a small always-on job that posts into the task channel on a minute-level cron. |
-
-> The runner wakes every 5 minutes, so that's the floor for *processing*: minute-level enqueues just pile up and get cleared on the next wake (the handler drains every pending message each run).
-
-**Workflows aren't just for schedules.** A Slack Workflow can also fire on an *event* — a specific message appearing in some channel, an emoji reaction, a form submission — and post into the task channel in response. That's reactive enqueuing with no server of your own to run.
+> The runner wakes every 5 minutes, so that's the floor for *processing*. Whatever arrives in between just piles up and gets cleared on the next wake, since the handler drains every pending message each run.
 
 ---
 
@@ -214,7 +190,7 @@ Slack already knows how to post messages on a schedule — let it be your cron. 
 
 The runner fires once on the latest unhandled message; **your command owns the whole loop.** Reactions in the channel are the only state, and the runner can fire again at any time — so write the handler to be **safe to re-run**: idempotent and crash-safe. The proven shape has three phases:
 
-1. **Collect pending — newest to oldest, stop at the first handled message.** Page back through `conversations.history`. A message is *handled* if it already carries any of `⏳` / `✅` / `❌`; the moment you hit one, everything older is done too (FIFO) — stop. Skip system messages (those with a `subtype`).
+1. **Collect pending — newest to oldest, stop at the first handled message.** Page back through `conversations.history`. A message is *handled* if it already carries any of `⏳` / `✅` / `❌`; the moment you hit one, everything older is done too (FIFO) — stop. Skip join/leave and other system messages by matching their **specific** `subtype` values — do **not** skip on the mere presence of a `subtype`. Workflow-posted messages arrive with `subtype: "bot_message"`, so a blanket skip silently drops every task the Workflow delivers.
 2. **Claim everything with `⏳` first.** Before doing any work, add `⏳` (`hourglass_flowing_sand`) to every collected message. Now the next runner cycle sees them as handled and won't double-grab them.
 3. **Process oldest first, and remove `⏳` last.** For each: do the work, post the result in-thread, add the terminal reaction (`✅` `white_check_mark` on success, `❌` `x` on failure), **then** remove `⏳`. Always reach a terminal reaction — catch your errors and mark `❌` rather than letting a message fall through.
 
@@ -223,13 +199,17 @@ Two rules make it crash-safe:
 - **Remove `⏳` last.** If the process dies right after the terminal reaction or just before removing `⏳`, the message still shows a handled reaction (`⏳`, or `✅`/`❌`), so the next cycle skips it — no duplicate work or replies. A brief `⏳`+`✅` overlap is normal.
 - **Make every Slack call idempotent.** A re-run touches the same message again, so swallow the "already done" errors: `already_reacted` when adding, `no_reaction` / `message_not_found` when removing, `cannot_reply_to_message` / `thread_not_found` when replying.
 
+And one rule that keeps the queue converging:
+
+- **Never silently skip a message the runner counts as pending.** The runner looks at reactions and nothing else. Any message your handler drops without leaving a reaction stays unhandled forever, so the runner keeps spawning `$COMMAND` every 5 minutes while the handler keeps finding nothing to do. Either process it and react, or keep your skip rules narrow enough that it never happens.
+
 Sketch (Python, `slack_sdk`):
 
 ```python
 RUNNING, DONE, FAILED = "hourglass_flowing_sand", "white_check_mark", "x"
 HANDLED = {RUNNING, DONE, FAILED}
 
-pending = collect_pending(client, channel)   # newest→oldest, stop at first HANDLED, skip subtypes
+pending = collect_pending(client, channel)   # newest→oldest, stop at first HANDLED, skip only system subtypes
 for msg in pending:                          # claim all up front
     add_reaction(client, channel, msg["ts"], RUNNING)
 

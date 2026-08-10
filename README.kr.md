@@ -11,16 +11,16 @@
 
 ("Clamshell"은 Apple이 "뚜껑이 닫힌 노트북"을 부르는 용어로, 이 도구가 겨냥하는 동작 모드입니다.)
 
-Slack 채널 자체가 큐이고, **그 채널에 메시지를 올릴 수 있는 것이라면 무엇이든 작업을 등록하는 셈**입니다 — 직접 입력이든, `/remind` 든, Slack Workflow 든, 선택 사항인 `server` 든. `⏳` · `✅` · `❌` 세 가지 reaction이 작업의 상태를 표현합니다. 별도의 DB는 없고, runner 는 그저 채널을 읽기만 합니다.
+Slack 채널 자체가 큐이고, **그 채널에 메시지를 올릴 수 있는 것이라면 무엇이든 작업을 등록하는 셈**입니다 — 직접 입력하든, Slack Workflow 가 전달해 주든. `⏳` · `✅` · `❌` 세 가지 reaction이 작업의 상태를 표현합니다. 별도의 DB도 없고, **내 것이 돌아가는 곳은 노트북뿐입니다.**
 
-- **`runner`** (필수, 노트북에서 실행) — `launchd` 와 `pmset` 이 5분마다 호출합니다. task 채널의 최신 메시지에 `⏳`/`✅`/`❌` reaction이 없으면 `$COMMAND` 를 백그라운드(detached)로 실행한 뒤 종료합니다.
-- **`server`** (선택, 상시 켜져 있는 호스트에서 실행) — 어느 채널에서든 봇을 @멘션하면 그 메시지를 곧바로 task 채널로 전달합니다. 멘션하는 순간 작업이 들어가는 셈입니다. 정기 작업(`/remind`, Workflow)만으로 충분하다면 안 써도 됩니다.
+- **`runner`** (유일한 바이너리, 노트북에서 실행) — `launchd` 와 `pmset` 이 5분마다 호출합니다. task 채널의 최신 메시지에 `⏳`/`✅`/`❌` reaction이 없으면 `$COMMAND` 를 백그라운드(detached)로 실행한 뒤 종료합니다.
+- **Slack Workflow** (코드도, 호스트도, app-level 토큰도 없음) — 지정한 채널들을 지켜보다가 조건에 맞는 메시지를 task 채널로 전달합니다. 이것이 유입 경로의 전부입니다. 서비스를 직접 띄우지 않고도 어느 채널에서든 작업이 한곳으로 모입니다.
 
 ```mermaid
 flowchart TD
-    F["직접 타이핑 · /remind · Slack Workflow"] -->|"메시지 올리기"| Q["task-queue 채널 · 큐"]
-    A["어느 채널에서든 봇을 @멘션"] --> S["server · 선택 · 상시 실행 · Socket Mode"]
-    S -->|"멘션 전달"| Q
+    F["task 채널에 직접 타이핑"] -->|"메시지 올리기"| Q["task-queue 채널 · 큐"]
+    A["감시 채널의 조건에 맞는 메시지"] --> S["Slack Workflow · Slack 안에서 실행"]
+    S -->|"전달"| Q
 
     subgraph Mac["MacBook · 대부분 뚜껑 닫고 잠든 상태"]
       W["launchd + pmset · 5분마다 wake"] --> R["runner · 짧게 실행"]
@@ -36,20 +36,12 @@ flowchart TD
 ## 빌드
 
 ```bash
-go build -o bin/server ./cmd/server
 go build -o bin/runner ./cmd/runner
 ```
 
-크로스 컴파일은 Go의 환경변수만으로 가능합니다. 별도 툴체인 설치가 필요하지 않습니다.
+크로스 컴파일은 Go의 환경변수만으로 가능합니다. 별도 툴체인 설치가 필요하지 않습니다. runner 는 POSIX session API에 의존하므로 Unix 계열만 지원합니다.
 
 ```bash
-# server — 모든 OS에서 동작
-GOOS=linux   GOARCH=amd64 go build -o bin/server-linux-amd64       ./cmd/server
-GOOS=linux   GOARCH=arm64 go build -o bin/server-linux-arm64       ./cmd/server
-GOOS=darwin  GOARCH=arm64 go build -o bin/server-darwin-arm64      ./cmd/server
-GOOS=windows GOARCH=amd64 go build -o bin/server-windows-amd64.exe ./cmd/server
-
-# runner — Unix 계열만 (POSIX session API에 의존)
 GOOS=darwin GOARCH=arm64 go build -o bin/runner-darwin-arm64 ./cmd/runner
 GOOS=linux  GOARCH=amd64 go build -o bin/runner-linux-amd64  ./cmd/runner
 ```
@@ -61,43 +53,44 @@ GOOS=linux  GOARCH=amd64 go build -o bin/runner-linux-amd64  ./cmd/runner
 https://api.slack.com/apps 에서 다음 순서로 설정합니다.
 
 1. **Create New App** → from scratch
-2. **Socket Mode** 활성화
-3. **App-Level Tokens** 에서 `connections:write` 스코프로 토큰 발급 → `SLACK_APP_TOKEN` (`xapp-` 로 시작)
-4. **OAuth & Permissions → Bot Token Scopes** 에 다음을 추가:
-   - `app_mentions:read`
+2. **OAuth & Permissions → Bot Token Scopes** 에 다음을 추가:
+   - `channels:history`
    - `chat:write`
    - `reactions:write`
-   - `channels:history`
 
-   *누가 무엇을 쓰나:* `app_mentions:read` + `chat:write` → server, `channels:history` → runner, `reactions:write` (+ thread 답글용 `chat:write`) → `$COMMAND` 핸들러. 큐 채널을 **비공개**로 만들면 `channels:history` 대신 `groups:history` 가 필요합니다.
-5. **Install to Workspace** → Bot Token 복사 → `SLACK_BOT_TOKEN` (`xoxb-` 로 시작)
-6. **Event Subscriptions** → `app_mention` 구독
-7. 큐로 사용할 Slack 채널을 만듭니다 (예: `#task-queue`). 채널 ID를 복사해 `SLACK_TASK_CHANNEL` 에 넣습니다 (`C01...` 형식).
-8. **봇을 채널에 초대합니다. 큐 채널과 멘션을 받을 채널 모두에 초대해야 합니다.**
+   *누가 무엇을 쓰나:* `channels:history` → runner, `reactions:write` + `chat:write` → `$COMMAND` 핸들러. 큐 채널을 **비공개**로 만들면 `channels:history` 대신 `groups:history` 가 필요합니다.
+3. **Install to Workspace** → Bot Token 복사 → `SLACK_BOT_TOKEN` (`xoxb-` 로 시작)
+4. 큐로 사용할 Slack 채널을 만듭니다 (예: `#task-queue`). 채널 ID를 복사해 `SLACK_TASK_CHANNEL` 에 넣습니다 (`C01...` 형식).
+5. 봇을 **큐 채널에만** 초대합니다.
 
    ```
    /invite @your-bot-name
    ```
 
+Socket Mode도, app-level 토큰도, Event Subscriptions도 필요 없습니다. 작업을 던질 채널마다 봇을 초대할 필요도 없습니다. 토큰은 노트북에만 존재합니다.
+
 ---
 
-## `server` 실행 (선택)
+## 큐에 작업 넣기 (Slack Workflow)
 
-server 가 하는 일은 하나입니다 — 어느 채널에서든 봇을 @멘션하는 순간, 그 메시지를 task 채널로 전달합니다. 즉각 반응이 필요한 **리액티브** 경로입니다. 어디까지나 선택 사항이라, `/remind` 와 Slack Workflow 로 충분하면 안 써도 됩니다. runner 는 그저 채널을 읽을 뿐입니다.
+task 채널에 메시지를 올릴 수 있는 것이라면 무엇이든 작업이 됩니다. 그러니 가장 단순한 방법은 그 채널에 직접 치는 것입니다. *다른* 채널에서 작업을 모아 오려면 **Slack Workflow** 를 씁니다 — Slack 안에서 돌기 때문에 살려둘 호스트도, 토큰 사본도 필요 없습니다.
 
-상시 떠 있어야 하지만 아주 가벼운 프로세스라, 저렴한 VPS 나 무료 플랜 호스트로도 충분합니다. (나중에 서버리스 버전을 만들어 볼 수도 있습니다.)
+Workflow Builder → **New** → **Build Workflow** 에서:
 
-상시 켜져 있는 호스트에 바이너리를 두고 env를 로드한 뒤 실행합니다.
+1. **Choose an event → "When a message is posted"** — 감시할 채널(최대 20개)을 고르고 키워드 조건을 추가합니다.
+2. **Add Step → "Send a message"** — task 채널을 지정하고, 내용에는 메시지 텍스트 변수를 넣습니다.
+3. **Finish Up → Publish** — 발행하기 전까지는 아무것도 동작하지 않습니다.
 
-```bash
-cp .env.example .env
-# SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_TASK_CHANNEL 을 채웁니다.
+정기 작업은 트리거만 **"On a schedule"** 로 바꿔 똑같이 만들면 됩니다. 직접 띄우는 것 없이 매일·매시간 작업이 해결됩니다.
 
-set -a; source .env; set +a
-./bin/server
-```
+### 반드시 걸리는 네 가지
 
-Socket Mode로 outbound WebSocket을 유지하기 때문에 inbound 포트나 공개 URL이 필요하지 않습니다.
+- **키워드로 @멘션을 잡을 수 없습니다.** Slack 은 실제 멘션을 `<@U0123ABC>` 형태로 저장하므로, `@your-bot` 이라고 넣은 키워드는 아무것도 매칭하지 못합니다. 표시 이름은 메시지 텍스트에 존재하지 않습니다. "봇을 태그하면 동작"을 원한다면 키워드에 원시 형태인 `<@U0123ABC>` 를 그대로 넣으세요. 아니면 평범한 코드워드를 쓰면 됩니다.
+- **키워드는 AND 조건입니다.** 추가한 키워드가 **모두** 들어 있어야 합니다. 지나치게 구체적인 키워드 하나가 나머지 전부를 조용히 막습니다.
+- **감시 채널 목록에서 task 채널은 빼세요.** 같은 채널을 감시하면서 그 채널에 올리는 워크플로우는 스스로를 영원히 트리거합니다.
+- **전달되는 텍스트 앞에 무언가를 붙이지 마세요.** 핸들러가 메시지에서 태그를 파싱한다면, 메시지 스텝에 하드코딩한 접두어가 사용자의 태그 대신 파싱됩니다. 변수만 단독으로 보내세요.
+
+그리고 **Advanced Filters 는 봇/에이전트 메시지와 스레드 답글을 기본적으로 제외합니다.** 다른 앱이 올린 글로 트리거하려면 여기서 열어 주어야 합니다.
 
 ---
 
@@ -187,26 +180,9 @@ sudo pmset schedule cancelall
 
 ## 작업 넣기
 
-"작업"은 결국 task 채널에 올라온 메시지 하나입니다. 누가 어떻게 올렸든 그 채널에 메시지만 있으면, 다음 runner 사이클이 그걸 가져와 `$COMMAND` 를 실행합니다. 이 채널이 곧 인터페이스의 전부입니다.
+"작업"은 결국 task 채널에 올라온 메시지 하나입니다. 누가 어떻게 올렸든 그 채널에 메시지만 있으면, 다음 runner 사이클이 그걸 가져와 `$COMMAND` 를 실행합니다. 이 채널이 곧 인터페이스의 전부입니다. 직접 치거나, [Workflow](#큐에-작업-넣기-slack-workflow) 가 대신 전달해 주면 됩니다.
 
-일의 성격에 따라 두 갈래입니다.
-
-- **정기 / 반복 — 직접 띄워둘 게 없음.** Slack 이 알아서 정해진 시각에 task 채널로 메시지를 올립니다(아래 표). 대부분은 이 경우입니다.
-- **즉각 / 리액티브 — 선택 사항인 [`server`](#server-실행-선택).** 어느 채널에서든 봇을 @멘션하면 즉시 task 채널로 전달됩니다. 즉시성이 필요할 때만 쓰면 됩니다.
-
-### 반복 작업 예약하기
-
-Slack 에는 정해진 시각에 메시지를 보내는 기능이 이미 있습니다. 그걸 cron 처럼 쓰면 됩니다. 필요한 주기에 맞는 도구를 고르세요.
-
-| 주기 | 도구 | 방법 |
-|---|---|---|
-| 매일 / 매주, 정해진 시각 | `/remind` | task 채널에서 `/remind` 를 실행하면 바로 큐에 들어갑니다 — 예: `/remind here to "확인 부탁드립니다" every day at 9am`. (다른 채널에서 `@your-bot` 멘션과 함께 실행하면 선택 사항인 server 가 대신 전달합니다.) |
-| 시간 단위 | **Slack Workflow** | `/remind` 는 하루보다 잦게 반복할 수 없습니다. Workflow(Workflow Builder → *Scheduled* 트리거)를 만들고, task 채널에 작업 메시지를 올리는 단계를 추가하세요. |
-| 분 단위 | **직접 띄운 server / cron** | Slack 기본 스케줄러는 그렇게까지 잘게 내려가지 않습니다. 상시 실행되는 작은 프로세스를 두고, 분 단위 cron 으로 task 채널에 메시지를 올립니다. |
-
-> runner 는 5분마다 깨어나므로 *처리* 주기의 하한은 5분입니다. 분 단위로 넣은 작업은 쌓였다가 다음 wake 때 한 번에 처리됩니다(핸들러가 매 실행마다 미처리 메시지를 모두 비웁니다).
-
-**Workflow 는 스케줄에만 쓰는 게 아닙니다.** Slack Workflow 는 *이벤트* 로도 실행됩니다 — 어떤 채널에 특정 메시지가 올라오거나, 이모지 reaction 이 달리거나, 폼이 제출되면 — 그에 반응해 task 채널로 메시지를 올릴 수 있습니다. 직접 서버를 띄우지 않고도 리액티브하게 작업을 넣는 방법입니다.
+> runner 는 5분마다 깨어나므로 *처리* 주기의 하한은 5분입니다. 그 사이에 들어온 작업은 쌓였다가 다음 wake 때 한 번에 처리됩니다(핸들러가 매 실행마다 미처리 메시지를 모두 비웁니다).
 
 ---
 
@@ -214,7 +190,7 @@ Slack 에는 정해진 시각에 메시지를 보내는 기능이 이미 있습�
 
 runner 는 최신 미처리 메시지 하나에 한 번 반응하고, **전체 루프는 `$COMMAND` 가 책임집니다.** 채널의 reaction이 유일한 상태이고 runner 는 언제든 다시 실행될 수 있으니, 핸들러는 **다시 돌려도 안전하게**(멱등 + 크래시 안전) 짜야 합니다. 검증된 형태는 3단계입니다.
 
-1. **수집 — 최신에서 과거로, 처리된 메시지를 만나면 멈춤.** `conversations.history` 를 거슬러 올라가며 가져옵니다. `⏳` / `✅` / `❌` 중 하나라도 붙은 메시지를 만나면 그보다 오래된 것은 모두 처리된 것이니(FIFO 가정) 거기서 멈춥니다. 시스템 메시지(`subtype` 이 있는 것)는 건너뜁니다.
+1. **수집 — 최신에서 과거로, 처리된 메시지를 만나면 멈춤.** `conversations.history` 를 거슬러 올라가며 가져옵니다. `⏳` / `✅` / `❌` 중 하나라도 붙은 메시지를 만나면 그보다 오래된 것은 모두 처리된 것이니(FIFO 가정) 거기서 멈춥니다. 가입/탈퇴 같은 시스템 메시지는 **구체적인 `subtype` 값을 지정해서** 건너뛰고, `subtype` 이 있다는 이유만으로 건너뛰지는 마세요. Workflow 가 올린 메시지는 `subtype: "bot_message"` 를 달고 오기 때문에, 통째로 걸러 버리면 Workflow 가 전달한 작업이 전부 조용히 사라집니다.
 2. **먼저 전부 `⏳` 로 선점.** 작업을 시작하기 전에, 수집한 모든 메시지에 `⏳` (`hourglass_flowing_sand`) 를 박습니다. 그러면 다음 runner 사이클이 처리됨으로 보고 다시 잡지 않습니다.
 3. **오래된 것부터 처리하고, `⏳` 는 맨 마지막에 제거.** 각 메시지마다 순서대로: 작업 수행 → 결과를 thread 에 답글 → 최종 reaction 추가(성공 `✅` `white_check_mark`, 실패 `❌` `x`) → **그 다음** `⏳` 제거. 실패해도 예외를 잡아 `❌` 로 **반드시 종결**시키고, 그냥 흘려보내지 않습니다.
 
@@ -223,13 +199,17 @@ runner 는 최신 미처리 메시지 하나에 한 번 반응하고, **전체 �
 - **`⏳` 를 맨 마지막에 뗀다.** 최종 reaction 직후나 `⏳` 제거 직전에 프로세스가 죽어도, 메시지에는 처리됨을 뜻하는 reaction(`⏳`, 또는 `✅`/`❌`)이 남아 있어 다음 사이클이 건너뜁니다 — 중복 작업·중복 답글이 없습니다. 잠깐 `⏳`+`✅` 가 같이 보이는 건 정상입니다.
 - **모든 Slack 호출을 멱등하게 만든다.** 재실행은 같은 메시지를 또 건드리므로, "이미 처리됨" 에러는 무시합니다: 추가 시 `already_reacted`, 제거 시 `no_reaction` / `message_not_found`, 답글 시 `cannot_reply_to_message` / `thread_not_found`.
 
+그리고 큐가 수렴하게 만드는 규칙이 하나 더 있습니다.
+
+- **runner 가 미처리로 보는 메시지를 말없이 건너뛰지 않는다.** runner 는 오직 reaction 만 봅니다. 핸들러가 reaction 을 남기지 않고 넘긴 메시지는 영원히 미처리로 남아, runner 는 5분마다 `$COMMAND` 를 계속 띄우고 핸들러는 계속 할 일이 없다고 답하는 상태가 됩니다. 처리하고 reaction 을 달든지, 그런 일이 생기지 않을 만큼 건너뛰는 조건을 좁게 유지하세요.
+
 스케치 (Python, `slack_sdk`):
 
 ```python
 RUNNING, DONE, FAILED = "hourglass_flowing_sand", "white_check_mark", "x"
 HANDLED = {RUNNING, DONE, FAILED}
 
-pending = collect_pending(client, channel)   # 최신→과거, 처리된 것 만나면 멈춤, subtype 건너뜀
+pending = collect_pending(client, channel)   # 최신→과거, 처리된 것 만나면 멈춤, 시스템 subtype 만 건너뜀
 for msg in pending:                          # 먼저 전부 선점
     add_reaction(client, channel, msg["ts"], RUNNING)
 
