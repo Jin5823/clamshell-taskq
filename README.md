@@ -14,7 +14,7 @@
 The Slack channel itself is the queue, and **anything that can post to it enqueues work** — you typing a message, or a Slack Workflow forwarding one in. Reactions (`⏳`/`✅`/`❌`) are the state. No database, and **nothing of yours runs anywhere but the laptop**.
 
 - **`runner`** (the only binary, on your laptop) — invoked every 5 minutes by `launchd` + `pmset` wake. If the latest task-channel message carries no `⏳`/`✅`/`❌` reaction yet, it spawns `$COMMAND` detached and exits.
-- **A Slack Workflow** (no code, no host, no app-level token) — watches the channels you pick and forwards matching messages into the task channel. That is the entire ingest path: work fans in from anywhere, centrally, without you running a service.
+- **A Slack Workflow** (no code, no host, no app-level token) — watches the channels you pick and forwards matching messages into the task channel. That is the entire ingest path: work fans in from anywhere into one channel, with no service of yours to run.
 
 ```mermaid
 flowchart TD
@@ -39,7 +39,7 @@ flowchart TD
 go build -o bin/runner ./cmd/runner
 ```
 
-Cross-compile (Go does this with env vars only — no toolchain install needed). Unix-like only, since the runner relies on POSIX session APIs:
+Cross-compile with env vars alone — no toolchain to install. The runner is Unix-only, since it relies on POSIX session APIs:
 
 ```bash
 GOOS=darwin GOARCH=arm64 go build -o bin/runner-darwin-arm64 ./cmd/runner
@@ -67,13 +67,15 @@ At https://api.slack.com/apps:
    /invite @your-bot-name
    ```
 
-No Socket Mode, no app-level token, no Event Subscriptions, and the bot never needs to sit in the channels you throw work from. The token lives on your laptop and nowhere else.
+No Socket Mode, no app-level token, no Event Subscriptions, and the bot never needs to join the channels you send work from. The token lives on your laptop and nowhere else.
 
 ---
 
-## Getting work into the queue (Slack Workflow)
+## Getting work into the queue
 
-Anything that posts into the task channel enqueues work, so the simplest task is one you type there yourself. To fan work in from *other* channels, use a **Slack Workflow** — it runs inside Slack, so there is no host to keep alive and no second copy of your token.
+A "task" is just a message in the task channel. The next runner cycle picks up whatever is unhandled and fires `$COMMAND`, and nothing is special about who posted it or how — so the simplest task is one you type in yourself.
+
+To pull in work from *other* channels, use a **Slack Workflow**. It runs inside Slack, so there is no host to keep alive and no second copy of your token.
 
 In Workflow Builder → **New** → **Build Workflow**:
 
@@ -81,16 +83,18 @@ In Workflow Builder → **New** → **Build Workflow**:
 2. **Add Step → "Send a message"** → the task channel, with the message-text variable as the content.
 3. **Finish Up → Publish.** Nothing fires until it is published.
 
-For recurring work, build the same thing with the **"On a schedule"** trigger instead — that covers daily/hourly jobs without anything of yours running.
+For recurring work, build the same thing with the **"On a schedule"** trigger instead.
+
+> The runner wakes every 5 minutes, so that is the floor for *processing*. Whatever arrives in between piles up and clears on the next wake, since the handler drains every pending message on each run.
 
 ### Four things that will bite you
 
-- **Keywords cannot be @mentions.** Slack stores a real mention as `<@U0123ABC>`, so a keyword typed as `@your-bot` matches nothing — the display name is not in the message text. If you want "tag the bot" to be the trigger, paste the raw `<@U0123ABC>` form in as the keyword. Otherwise pick a plain codeword.
-- **Keywords are ANDed.** Every keyword you add must appear. One over-specific keyword silently blocks everything else.
-- **Leave the task channel out of the watched list.** A workflow that both watches and posts to the same channel will trigger itself forever.
-- **Don't prefix the forwarded text.** If your handler parses the message for a tag, a hardcoded prefix in the message step gets parsed instead of the user's. Send the variable alone.
+- **Keywords cannot be @mentions.** Slack stores a real mention as `<@U0123ABC>`, so a keyword typed as `@your-bot` matches nothing — the display name never appears in the message text. If you want tagging the bot to be the trigger, use the raw `<@U0123ABC>` form as the keyword. Otherwise pick a plain codeword.
+- **Keywords are ANDed.** Every keyword you add has to appear. One over-specific keyword silently blocks everything else.
+- **Leave the task channel out of the watched list.** A workflow that watches the same channel it posts to will trigger itself forever.
+- **Don't prefix the forwarded text.** If your handler parses the message for a tag, a hardcoded prefix in the message step gets parsed as the tag instead of the one the user typed. Send the variable on its own.
 
-Also note that **Advanced Filters exclude bot/agent messages and thread replies by default** — open them up if you want another app's posts to trigger the workflow.
+One more default worth knowing: **Advanced Filters exclude bot/agent messages and thread replies** — adjust them if you want another app's posts to trigger the workflow.
 
 ---
 
@@ -175,14 +179,6 @@ sudo rm /usr/local/bin/clamshell-runner
 sudo pmset schedule cancelall
 # rm -rf ~/.clamshell-taskq                    # also wipes env/logs
 ```
-
----
-
-## Enqueuing tasks
-
-A "task" is just a message in the task channel, so **anything that can post there enqueues work** — and the next runner cycle picks up any unhandled message and fires `$COMMAND`. That channel is the entire interface; nothing is special about who posts or how. Type one in yourself, or let a [Workflow](#getting-work-into-the-queue-slack-workflow) forward one in for you.
-
-> The runner wakes every 5 minutes, so that's the floor for *processing*. Whatever arrives in between just piles up and gets cleared on the next wake, since the handler drains every pending message each run.
 
 ---
 
