@@ -155,9 +155,9 @@ Under the hood, `run.sh` wraps each cycle in `caffeinate -i` and arms several `p
 
 | Path | Owned by | Purpose |
 |---|---|---|
-| `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `NOPASSWD` for `pmset schedule wake *` only |
+| `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `NOPASSWD` for `pmset schedule wake *` and `pmset -a disablesleep 0|1`, nothing else |
 | `~/.clamshell-taskq/.env` | you (step 4, `cp`) | your tokens + `$COMMAND` |
-| `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | wrapper: `caffeinate` the cycle → load env → run runner → re-arm the next wake(s) |
+| `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | wrapper: `caffeinate` the cycle → load env → run runner → hold/release `SleepDisabled` → re-arm the next wake(s) |
 | `~/Library/LaunchAgents/com.clamshell-taskq.runner.plist` | `setup-launchd-ready.sh` | `RunAtLoad` + `StartCalendarInterval` at `:00, :05, …, :55` |
 | `~/.clamshell-taskq/launchd.{out,err}.log` | launchd | launchd-captured runner output |
 
@@ -166,6 +166,7 @@ Under the hood, `run.sh` wraps each cycle in `caffeinate -i` and arms several `p
 ```bash
 pmset -g sched                                 # next wake scheduled?
 launchctl list | grep clamshell-taskq.runner   # LaunchAgent registered?
+pmset -g | grep SleepDisabled                  # 1 only while a task is running
 tail -f ~/.clamshell-taskq/launchd.{out,err}.log
 ```
 
@@ -177,8 +178,36 @@ rm ~/Library/LaunchAgents/com.clamshell-taskq.runner.plist
 sudo rm /etc/sudoers.d/clamshell-pmset
 sudo rm /usr/local/bin/clamshell-runner
 sudo pmset schedule cancelall
+sudo pmset -a disablesleep 0                   # make sure sleep is back on
 # rm -rf ~/.clamshell-taskq                    # also wipes env/logs
 ```
+
+---
+
+## Staying awake for the length of a task
+
+With the lid closed on battery, a `pmset` wake does not bring the Mac fully up. It gets a **dark wake**, which lasts about 45 seconds before the machine drops straight back to sleep. The runner finishes well inside that. `$COMMAND` usually does not — it gets frozen mid-flight and thawed on the next wake, so a task needing three minutes of CPU is smeared across twenty minutes of wall clock, and any connection it was holding when the freeze landed is dead when it comes back.
+
+Measured on an M4 Pro / macOS 26.5, lid closed, on battery:
+
+| | duty cycle |
+|---|---|
+| `caffeinate -i` alone | **16%** — 45s awake, 4m15s asleep, repeating |
+| `SleepDisabled` set | **100%** — 36 minutes straight, no sleep at all |
+
+**No power assertion fixes this.** `caffeinate -i` asserts `PreventUserIdleSystemSleep`, but the sleep here is `Clamshell Sleep` followed by `Maintenance Sleep` — neither is idle sleep, so the assertion is held correctly and simply does not apply. `-s` is ignored on battery, and a lid close is a hardware path that no assertion overrides.
+
+The kernel's `SleepDisabled` flag is the one thing that survives a lid close, so `run.sh` holds it for exactly as long as there is work:
+
+```
+runner spawned $COMMAND   →  pmset -a disablesleep 1
+$COMMAND still running    →  leave it set
+nothing running           →  pmset -a disablesleep 0
+```
+
+The decision is re-made every cycle from the live process table, which doubles as the cleanup path: a task that dies without releasing the flag leaves it set for at most one cycle. That matters, because `SleepDisabled` persists across reboots — a stuck flag would otherwise drain the battery with nothing on screen to say why.
+
+So on battery the Mac does stay fully awake for the length of a task. If you ever suspect the flag is stuck, `pmset -g | grep SleepDisabled` tells you.
 
 ---
 
@@ -198,6 +227,7 @@ Two rules make it crash-safe:
 And one rule that keeps the queue converging:
 
 - **Never silently skip a message the runner counts as pending.** The runner looks at reactions and nothing else. Any message your handler drops without leaving a reaction stays unhandled forever, so the runner keeps spawning `$COMMAND` every 5 minutes while the handler keeps finding nothing to do. Either process it and react, or keep your skip rules narrow enough that it never happens.
+- **Don't read an exit code as success.** A headless tool can exit 0 with a payload that says the run died — an interrupted API stream is the usual way. React `✅` to that and the task is marked done, the work is gone, and nothing retries. Check what the tool actually returned, not just how it exited.
 
 Sketch (Python, `slack_sdk`):
 
@@ -242,7 +272,8 @@ COMMAND="/usr/bin/caffeinate -i /usr/local/bin/python3 /Users/me/handlers/main.p
 
 ## Honest limits
 
-- **macOS itself does not guarantee** every scheduled wake fires under every combination of conditions — lid closed, on battery, deep sleep. There are scattered reports of firmware sleep hangs on M-series Macs running macOS 26.x. Expect **most** 5-minute cycles to fire when closed and asleep; a missed cycle just means the work waits for the next one.
+- **A running task keeps the Mac fully awake, and on battery that costs.** `SleepDisabled` is set for the whole length of `$COMMAND`. There is no battery floor built in yet, so if you queue long work overnight on battery, size it accordingly or leave the Mac on power.
+- **macOS does not promise that every scheduled wake fires** under every combination of lid, power and sleep depth, and there are scattered reports of firmware sleep hangs on M-series Macs. In the runs measured here the 5-minute RTC wakes fired without a single miss, but don't assume that holds everywhere.
 - Missed wakes are not lost work: the Slack channel is the queue, so the next cycle catches up on whatever piled up.
 
 ## License
