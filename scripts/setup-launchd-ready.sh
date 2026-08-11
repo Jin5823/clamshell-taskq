@@ -39,14 +39,25 @@ EOF
     exit 1
 fi
 
-# Verify NOPASSWD rule by asking sudo whether the command would be
-# allowed without a password (-l -n lists the permission, does NOT
-# execute the command — so nothing gets scheduled).
+# Verify the NOPASSWD rules by asking sudo whether each command would be
+# allowed without a password (-l -n lists the permission, does NOT execute
+# the command — so nothing gets scheduled and no flag gets flipped).
 if ! sudo -l -n /usr/bin/pmset schedule wake "$(date '+%m/%d/%Y %H:%M:%S')" >/dev/null 2>&1; then
     cat <<EOF >&2
 error: 'sudo pmset schedule wake' is not configured for passwordless use.
 
 Run the sudoers installer first:
+    ./scripts/setup-sudoers.sh
+EOF
+    exit 1
+fi
+
+if ! sudo -l -n /usr/bin/pmset -a disablesleep 1 >/dev/null 2>&1; then
+    cat <<EOF >&2
+error: 'sudo pmset -a disablesleep' is not configured for passwordless use.
+
+This is what keeps the machine awake while a task runs. Re-run the sudoers
+installer to add the rule:
     ./scripts/setup-sudoers.sh
 EOF
     exit 1
@@ -78,6 +89,23 @@ set -a
 source "$ENV_FILE"
 set +a
 "$RUNNER_BIN"
+
+# Keep the machine awake while -- and only while -- a task is running.
+#
+# A lid-closed dark wake is short and the machine goes straight back to sleep,
+# freezing anything that needs longer. No power assertion overrides a lid
+# close, caffeinate included, so SleepDisabled is the only thing that works
+# here.
+#
+# This is re-evaluated every cycle from the process table, which doubles as
+# the cleanup path: a task that dies without clearing the flag leaves it set
+# for at most one cycle.
+if ps -Ao args= | grep -Fq -- "\$COMMAND"; then
+    /usr/bin/sudo /usr/bin/pmset -a disablesleep 1
+else
+    /usr/bin/sudo /usr/bin/pmset -a disablesleep 0
+fi
+
 # Re-arm the next cycle by bracketing the boundary with several wakes
 # (-10/-5/0/+5/+10s). A short battery dark wake often fails to run launchd at a
 # single instant, so give it multiple shots around the boundary -- including

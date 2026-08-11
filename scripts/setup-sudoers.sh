@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# Install a narrow-scope sudoers rule so the runner can re-arm the next
-# pmset wake without a password.
+# Install narrow-scope sudoers rules for the two things the runner has to do
+# without a password: re-arm the next pmset wake, and keep the machine awake
+# while a task runs.
 #
-# Scope: /usr/bin/pmset schedule wake *
-# All other pmset subcommands (sleepnow, hibernatemode, ...) still
-# require a password.
+# Scope:
+#   /usr/bin/pmset schedule wake *
+#   /usr/bin/pmset -a disablesleep 0
+#   /usr/bin/pmset -a disablesleep 1
+#
+# The two disablesleep values are spelled out instead of wildcarded so the
+# rule cannot be used to pass arbitrary arguments to pmset. All other pmset
+# subcommands (sleepnow, hibernatemode, ...) still require a password.
 #
 # Idempotent: re-running overwrites the existing rule.
 
@@ -24,9 +30,12 @@ TMP=$(mktemp)
 trap 'rm -f "$TMP"' EXIT
 
 cat > "$TMP" <<EOF
-# clamshell-taskq: allow $USER_NAME to re-arm the next wake without a
-# password. Scope is narrowed to 'pmset schedule wake' only.
+# clamshell-taskq: let $USER_NAME re-arm the next wake and keep the machine
+# awake while a task runs, without a password. Only these three exact forms
+# are allowed.
 $USER_NAME ALL=(root) NOPASSWD: /usr/bin/pmset schedule wake *
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0
+$USER_NAME ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1
 EOF
 
 if ! sudo visudo -c -f "$TMP" >/dev/null; then

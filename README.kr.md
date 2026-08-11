@@ -155,9 +155,9 @@ LaunchAgent를 로드합니다. plist에 `RunAtLoad=true` 가 있어 launchd가 
 
 | 경로 | 설치한 스크립트 | 용도 |
 |---|---|---|
-| `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `pmset schedule wake *` 한정 `NOPASSWD` |
+| `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `pmset schedule wake` 와 `pmset -a disablesleep` 한정 `NOPASSWD` |
 | `~/.clamshell-taskq/.env` | 사용자 (4단계, `cp`) | 본인 토큰 + `$COMMAND` |
-| `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | 래퍼: 사이클을 `caffeinate` → env 로드 → runner 실행 → 다음 wake 여러 개 등록 |
+| `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | 래퍼: 사이클을 `caffeinate` → env 로드 → runner 실행 → `SleepDisabled` 유지/해제 → 다음 wake 여러 개 등록 |
 | `~/Library/LaunchAgents/com.clamshell-taskq.runner.plist` | `setup-launchd-ready.sh` | `RunAtLoad` + `StartCalendarInterval` 매 5분 (`:00, :05, …, :55`) |
 | `~/.clamshell-taskq/launchd.{out,err}.log` | launchd | launchd가 캡처한 runner 출력 |
 
@@ -166,6 +166,7 @@ LaunchAgent를 로드합니다. plist에 `RunAtLoad=true` 가 있어 launchd가 
 ```bash
 pmset -g sched                                 # 다음 wake가 잡혔는지 확인
 launchctl list | grep clamshell-taskq.runner   # LaunchAgent가 등록되었는지 확인
+pmset -g | grep SleepDisabled                  # 작업 중일 때만 1이어야 함
 tail -f ~/.clamshell-taskq/launchd.{out,err}.log
 ```
 
@@ -177,8 +178,21 @@ rm ~/Library/LaunchAgents/com.clamshell-taskq.runner.plist
 sudo rm /etc/sudoers.d/clamshell-pmset
 sudo rm /usr/local/bin/clamshell-runner
 sudo pmset schedule cancelall
+sudo pmset -a disablesleep 0                   # sleep 정상 복구
 # rm -rf ~/.clamshell-taskq                    # env / 로그까지 함께 지우려면 주석 해제
 ```
+
+---
+
+## 작업 중에는 깨어 있기
+
+뚜껑을 닫은 맥은 아주 잠깐씩만 깨어납니다. runner 는 그 안에 끝나지만 대부분의 작업에는 부족합니다. 그래서 `run.sh` 는 `$COMMAND` 가 실행 중이면 커널의 `SleepDisabled` 플래그를 걸고, 실행 중인 작업이 없으면 풉니다.
+
+```bash
+pmset -g | grep SleepDisabled   # 작업 중이면 1, 아니면 0
+```
+
+매 사이클마다 다시 판단하므로 플래그가 한 사이클 넘게 남는 일은 없습니다. sudoers 규칙에 `pmset -a disablesleep` 이 들어 있는 것도 이 때문입니다.
 
 ---
 
@@ -239,11 +253,6 @@ COMMAND="/usr/bin/caffeinate -i /usr/local/bin/python3 /Users/me/handlers/main.p
 | `$COMMAND` 의 stdout / stderr | `~/.clamshell-taskq/logs/<timestamp>.log` |
 
 ---
-
-## 솔직한 한계
-
-- **macOS 자체가 모든 wake를 보장하지는 않습니다.** 뚜껑 닫힘 + 배터리 + 깊은 sleep 조합에서는 가끔 wake 사이클 하나가 통째로 빠질 수 있습니다. 대부분의 5분 사이클은 정상 동작합니다.
-- 빠진 wake가 곧 작업 손실로 이어지지 않습니다. Slack 채널이 큐 역할을 하므로, 다음에 깨어났을 때 그동안 쌓인 작업을 모두 처리합니다.
 
 ## 라이선스
 

@@ -155,9 +155,9 @@ Under the hood, `run.sh` wraps each cycle in `caffeinate -i` and arms several `p
 
 | Path | Owned by | Purpose |
 |---|---|---|
-| `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `NOPASSWD` for `pmset schedule wake *` only |
+| `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `NOPASSWD` for `pmset schedule wake` and `pmset -a disablesleep`, nothing else |
 | `~/.clamshell-taskq/.env` | you (step 4, `cp`) | your tokens + `$COMMAND` |
-| `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | wrapper: `caffeinate` the cycle → load env → run runner → re-arm the next wake(s) |
+| `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | wrapper: `caffeinate` the cycle → load env → run runner → hold/release `SleepDisabled` → re-arm the next wake(s) |
 | `~/Library/LaunchAgents/com.clamshell-taskq.runner.plist` | `setup-launchd-ready.sh` | `RunAtLoad` + `StartCalendarInterval` at `:00, :05, …, :55` |
 | `~/.clamshell-taskq/launchd.{out,err}.log` | launchd | launchd-captured runner output |
 
@@ -166,6 +166,7 @@ Under the hood, `run.sh` wraps each cycle in `caffeinate -i` and arms several `p
 ```bash
 pmset -g sched                                 # next wake scheduled?
 launchctl list | grep clamshell-taskq.runner   # LaunchAgent registered?
+pmset -g | grep SleepDisabled                  # 1 only while a task is running
 tail -f ~/.clamshell-taskq/launchd.{out,err}.log
 ```
 
@@ -177,8 +178,21 @@ rm ~/Library/LaunchAgents/com.clamshell-taskq.runner.plist
 sudo rm /etc/sudoers.d/clamshell-pmset
 sudo rm /usr/local/bin/clamshell-runner
 sudo pmset schedule cancelall
+sudo pmset -a disablesleep 0                   # restore normal sleep
 # rm -rf ~/.clamshell-taskq                    # also wipes env/logs
 ```
+
+---
+
+## Staying awake while a task runs
+
+A closed MacBook wakes only for short maintenance windows — long enough for the runner, too short for most tasks. So `run.sh` sets the kernel's `SleepDisabled` flag whenever `$COMMAND` is running, and clears it when nothing is running:
+
+```bash
+pmset -g | grep SleepDisabled   # 1 while a task runs, 0 otherwise
+```
+
+This is re-evaluated on every cycle, so the flag is never left set for more than one. It is what the `pmset -a disablesleep` entry in the sudoers rule is for.
 
 ---
 
@@ -239,11 +253,6 @@ COMMAND="/usr/bin/caffeinate -i /usr/local/bin/python3 /Users/me/handlers/main.p
 | Your `$COMMAND`'s stdout/stderr | `~/.clamshell-taskq/logs/<timestamp>.log` |
 
 ---
-
-## Honest limits
-
-- **macOS itself does not guarantee** every scheduled wake fires under every combination of conditions — lid closed, on battery, deep sleep. There are scattered reports of firmware sleep hangs on M-series Macs running macOS 26.x. Expect **most** 5-minute cycles to fire when closed and asleep; a missed cycle just means the work waits for the next one.
-- Missed wakes are not lost work: the Slack channel is the queue, so the next cycle catches up on whatever piled up.
 
 ## License
 
