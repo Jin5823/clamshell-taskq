@@ -155,7 +155,7 @@ Under the hood, `run.sh` wraps each cycle in `caffeinate -i` and arms several `p
 
 | Path | Owned by | Purpose |
 |---|---|---|
-| `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `NOPASSWD` for `pmset schedule wake *` and `pmset -a disablesleep 0|1`, nothing else |
+| `/etc/sudoers.d/clamshell-pmset` | `setup-sudoers.sh` | `NOPASSWD` for `pmset schedule wake` and `pmset -a disablesleep`, nothing else |
 | `~/.clamshell-taskq/.env` | you (step 4, `cp`) | your tokens + `$COMMAND` |
 | `~/.clamshell-taskq/run.sh` | `setup-launchd-ready.sh` | wrapper: `caffeinate` the cycle → load env → run runner → hold/release `SleepDisabled` → re-arm the next wake(s) |
 | `~/Library/LaunchAgents/com.clamshell-taskq.runner.plist` | `setup-launchd-ready.sh` | `RunAtLoad` + `StartCalendarInterval` at `:00, :05, …, :55` |
@@ -178,7 +178,7 @@ rm ~/Library/LaunchAgents/com.clamshell-taskq.runner.plist
 sudo rm /etc/sudoers.d/clamshell-pmset
 sudo rm /usr/local/bin/clamshell-runner
 sudo pmset schedule cancelall
-sudo pmset -a disablesleep 0                   # make sure sleep is back on
+sudo pmset -a disablesleep 0                   # restore normal sleep
 # rm -rf ~/.clamshell-taskq                    # also wipes env/logs
 ```
 
@@ -186,13 +186,13 @@ sudo pmset -a disablesleep 0                   # make sure sleep is back on
 
 ## Staying awake while a task runs
 
-A closed MacBook wakes only for short maintenance windows — long enough for the runner, too short for most tasks to finish in. So `run.sh` sets the kernel's `SleepDisabled` flag whenever `$COMMAND` is running, and clears it when nothing is:
+A closed MacBook wakes only for short maintenance windows — long enough for the runner, too short for most tasks. So `run.sh` sets the kernel's `SleepDisabled` flag whenever `$COMMAND` is running, and clears it when nothing is running:
 
 ```bash
 pmset -g | grep SleepDisabled   # 1 while a task runs, 0 otherwise
 ```
 
-The state is re-evaluated every cycle, so the flag is never left set for longer than one cycle. This is what the `pmset -a disablesleep` entry in the sudoers rule is for.
+This is re-evaluated on every cycle, so the flag is never left set for more than one. It is what the `pmset -a disablesleep` entry in the sudoers rule is for.
 
 ---
 

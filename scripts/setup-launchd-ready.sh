@@ -56,8 +56,8 @@ if ! sudo -l -n /usr/bin/pmset -a disablesleep 1 >/dev/null 2>&1; then
     cat <<EOF >&2
 error: 'sudo pmset -a disablesleep' is not configured for passwordless use.
 
-This is what keeps the machine awake for the length of a task. Re-run the
-sudoers installer to pick up the rule:
+This is what keeps the machine awake while a task runs. Re-run the sudoers
+installer to add the rule:
     ./scripts/setup-sudoers.sh
 EOF
     exit 1
@@ -90,17 +90,16 @@ source "$ENV_FILE"
 set +a
 "$RUNNER_BIN"
 
-# Hold the machine fully awake for as long as a task is running, and only
-# then.
+# Keep the machine awake while -- and only while -- a task is running.
 #
-# A lid-closed dark wake lasts ~45 seconds and the machine goes straight back
-# to sleep, freezing anything that needs longer. No power assertion overrides
-# a lid close -- caffeinate included -- so SleepDisabled is the only thing the
-# kernel honours here.
+# A lid-closed dark wake is short and the machine goes straight back to sleep,
+# freezing anything that needs longer. No power assertion overrides a lid
+# close, caffeinate included, so SleepDisabled is the only thing that works
+# here.
 #
-# The decision is re-made every cycle from the actual process table, which
-# doubles as the cleanup path: a task that dies without unsetting the flag
-# leaves it set for at most one cycle.
+# This is re-evaluated every cycle from the process table, which doubles as
+# the cleanup path: a task that dies without clearing the flag leaves it set
+# for at most one cycle.
 if ps -Ao args= | grep -Fq -- "\$COMMAND"; then
     /usr/bin/sudo /usr/bin/pmset -a disablesleep 1
 else
