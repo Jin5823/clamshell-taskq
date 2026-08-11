@@ -184,29 +184,17 @@ sudo pmset -a disablesleep 0                   # make sure sleep is back on
 
 ---
 
-## Staying awake for the length of a task
+## Staying awake while a task runs
 
-With the lid closed on battery, a `pmset` wake does not bring the Mac fully up. It gets a **dark wake** — a maintenance window lasting tens of seconds, after which the machine goes straight back to sleep. The runner finishes inside that. `$COMMAND` often does not: it is frozen mid-flight and thawed on the next wake, so a task needing a few minutes of CPU is smeared across an hour of wall clock, and any connection it was holding when the freeze landed is dead when it resumes.
+A closed MacBook only wakes for a few tens of seconds at a time. That is enough for the runner but not for most tasks — `$COMMAND` gets frozen partway through and resumed on the next wake, and any connection it was holding is gone.
 
-**No power assertion fixes this.** `caffeinate -i` asserts `PreventUserIdleSystemSleep`, but a lid close produces `Clamshell Sleep` and a dark wake ends in `Maintenance Sleep` — neither is idle sleep, so the assertion is held correctly and simply does not apply. `-s` is ignored on battery. The lid switch is a hardware path into `IOPMrootDomain` that no assertion overrides.
-
-The kernel's `SleepDisabled` flag is the one thing that survives it, so `run.sh` holds it for exactly as long as there is work:
-
-```
-runner spawned $COMMAND   →  pmset -a disablesleep 1
-$COMMAND still running    →  leave it set
-nothing running           →  pmset -a disablesleep 0
-```
-
-The decision is re-made every cycle from the live process table, which doubles as the cleanup path: a task that dies without releasing the flag leaves it set for at most one cycle. That matters, because `SleepDisabled` persists across reboots — a stuck flag would otherwise drain the battery with nothing on screen to say why. `pmset -g | grep SleepDisabled` tells you the current state.
-
-To see the effect on your own machine, log a timestamp every few seconds, close the lid, and look for gaps:
+So `run.sh` sets the kernel's `SleepDisabled` flag while a task is running and clears it when there is none. `caffeinate` cannot do this; nothing short of that flag survives a lid close.
 
 ```bash
-while true; do date +%H:%M:%S >> /tmp/hb.log; sleep 5; done
+pmset -g | grep SleepDisabled   # 1 while a task runs, 0 otherwise
 ```
 
-Gaps are the stretches it slept through. With `SleepDisabled` set there should be none.
+The flag is re-checked every cycle, so a task that dies without clearing it costs at most one cycle. Worth knowing anyway: it persists across reboots, and while it is set the Mac does not sleep at all — on battery that is a real drain.
 
 ---
 
