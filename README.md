@@ -186,15 +186,13 @@ sudo pmset -a disablesleep 0                   # make sure sleep is back on
 
 ## Staying awake while a task runs
 
-A closed MacBook only wakes for a few tens of seconds at a time. That is enough for the runner but not for most tasks — `$COMMAND` gets frozen partway through and resumed on the next wake, and any connection it was holding is gone.
-
-So `run.sh` sets the kernel's `SleepDisabled` flag while a task is running and clears it when there is none. `caffeinate` cannot do this; nothing short of that flag survives a lid close.
+A closed MacBook wakes only for short maintenance windows — long enough for the runner, too short for most tasks to finish in. So `run.sh` sets the kernel's `SleepDisabled` flag whenever `$COMMAND` is running, and clears it when nothing is:
 
 ```bash
 pmset -g | grep SleepDisabled   # 1 while a task runs, 0 otherwise
 ```
 
-The flag is re-checked every cycle, so a task that dies without clearing it costs at most one cycle. Worth knowing anyway: it persists across reboots, and while it is set the Mac does not sleep at all — on battery that is a real drain.
+The state is re-evaluated every cycle, so the flag is never left set for longer than one cycle. This is what the `pmset -a disablesleep` entry in the sudoers rule is for.
 
 ---
 
