@@ -186,18 +186,11 @@ sudo pmset -a disablesleep 0                   # make sure sleep is back on
 
 ## Staying awake for the length of a task
 
-With the lid closed on battery, a `pmset` wake does not bring the Mac fully up. It gets a **dark wake**, which lasts about 45 seconds before the machine drops straight back to sleep. The runner finishes well inside that. `$COMMAND` usually does not — it gets frozen mid-flight and thawed on the next wake, so a task needing three minutes of CPU is smeared across twenty minutes of wall clock, and any connection it was holding when the freeze landed is dead when it comes back.
+With the lid closed on battery, a `pmset` wake does not bring the Mac fully up. It gets a **dark wake** — a maintenance window lasting tens of seconds, after which the machine goes straight back to sleep. The runner finishes inside that. `$COMMAND` often does not: it is frozen mid-flight and thawed on the next wake, so a task needing a few minutes of CPU is smeared across an hour of wall clock, and any connection it was holding when the freeze landed is dead when it resumes.
 
-Measured on an M4 Pro / macOS 26.5, lid closed, on battery:
+**No power assertion fixes this.** `caffeinate -i` asserts `PreventUserIdleSystemSleep`, but a lid close produces `Clamshell Sleep` and a dark wake ends in `Maintenance Sleep` — neither is idle sleep, so the assertion is held correctly and simply does not apply. `-s` is ignored on battery. The lid switch is a hardware path into `IOPMrootDomain` that no assertion overrides.
 
-| | duty cycle |
-|---|---|
-| `caffeinate -i` alone | **16%** — 45s awake, 4m15s asleep, repeating |
-| `SleepDisabled` set | **100%** — 36 minutes straight, no sleep at all |
-
-**No power assertion fixes this.** `caffeinate -i` asserts `PreventUserIdleSystemSleep`, but the sleep here is `Clamshell Sleep` followed by `Maintenance Sleep` — neither is idle sleep, so the assertion is held correctly and simply does not apply. `-s` is ignored on battery, and a lid close is a hardware path that no assertion overrides.
-
-The kernel's `SleepDisabled` flag is the one thing that survives a lid close, so `run.sh` holds it for exactly as long as there is work:
+The kernel's `SleepDisabled` flag is the one thing that survives it, so `run.sh` holds it for exactly as long as there is work:
 
 ```
 runner spawned $COMMAND   →  pmset -a disablesleep 1
@@ -205,9 +198,15 @@ $COMMAND still running    →  leave it set
 nothing running           →  pmset -a disablesleep 0
 ```
 
-The decision is re-made every cycle from the live process table, which doubles as the cleanup path: a task that dies without releasing the flag leaves it set for at most one cycle. That matters, because `SleepDisabled` persists across reboots — a stuck flag would otherwise drain the battery with nothing on screen to say why.
+The decision is re-made every cycle from the live process table, which doubles as the cleanup path: a task that dies without releasing the flag leaves it set for at most one cycle. That matters, because `SleepDisabled` persists across reboots — a stuck flag would otherwise drain the battery with nothing on screen to say why. `pmset -g | grep SleepDisabled` tells you the current state.
 
-So on battery the Mac does stay fully awake for the length of a task. If you ever suspect the flag is stuck, `pmset -g | grep SleepDisabled` tells you.
+To see the effect on your own machine, log a timestamp every few seconds, close the lid, and look for gaps:
+
+```bash
+while true; do date +%H:%M:%S >> /tmp/hb.log; sleep 5; done
+```
+
+Gaps are the stretches it slept through. With `SleepDisabled` set there should be none.
 
 ---
 
@@ -273,7 +272,7 @@ COMMAND="/usr/bin/caffeinate -i /usr/local/bin/python3 /Users/me/handlers/main.p
 ## Honest limits
 
 - **A running task keeps the Mac fully awake, and on battery that costs.** `SleepDisabled` is set for the whole length of `$COMMAND`. There is no battery floor built in yet, so if you queue long work overnight on battery, size it accordingly or leave the Mac on power.
-- **macOS does not promise that every scheduled wake fires** under every combination of lid, power and sleep depth, and there are scattered reports of firmware sleep hangs on M-series Macs. In the runs measured here the 5-minute RTC wakes fired without a single miss, but don't assume that holds everywhere.
+- **macOS does not promise that every scheduled wake fires** under every combination of lid, power and sleep depth, and there are scattered reports of firmware sleep hangs on M-series Macs. Expect most cycles to fire; a missed one just means the work waits for the next.
 - Missed wakes are not lost work: the Slack channel is the queue, so the next cycle catches up on whatever piled up.
 
 ## License
