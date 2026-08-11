@@ -100,11 +100,14 @@ set +a
 # This is re-evaluated every cycle from the process table, which doubles as
 # the cleanup path: a task that dies without clearing the flag leaves it set
 # for at most one cycle.
-if ps -Ao args= | grep -Fq -- "\$COMMAND"; then
-    /usr/bin/sudo /usr/bin/pmset -a disablesleep 1
-else
-    /usr/bin/sudo /usr/bin/pmset -a disablesleep 0
-fi
+#
+# Snapshot ps first and match in the shell. Piping into grep would always
+# report a hit, because grep's own argv carries \$COMMAND and ps sees it.
+procs=\$(ps -Ao args=)
+case "\$procs" in
+    *"\$COMMAND"*) /usr/bin/sudo /usr/bin/pmset -a disablesleep 1 ;;
+    *)             /usr/bin/sudo /usr/bin/pmset -a disablesleep 0 ;;
+esac
 
 # Re-arm the next cycle by bracketing the boundary with several wakes
 # (-10/-5/0/+5/+10s). A short battery dark wake often fails to run launchd at a
