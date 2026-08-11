@@ -269,12 +269,6 @@ COMMAND="/usr/bin/caffeinate -i /usr/local/bin/python3 /Users/me/handlers/main.p
 
 ---
 
-## Honest limits
-
-- **A running task keeps the Mac fully awake, and on battery that costs.** `SleepDisabled` is set for the whole length of `$COMMAND`. There is no battery floor built in yet, so if you queue long work overnight on battery, size it accordingly or leave the Mac on power.
-- **macOS does not promise that every scheduled wake fires** under every combination of lid, power and sleep depth, and there are scattered reports of firmware sleep hangs on M-series Macs. Expect most cycles to fire; a missed one just means the work waits for the next.
-- Missed wakes are not lost work: the Slack channel is the queue, so the next cycle catches up on whatever piled up.
-
 ## License
 
 MIT — see [LICENSE](LICENSE).
