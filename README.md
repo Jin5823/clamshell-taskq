@@ -226,7 +226,6 @@ Two rules make it crash-safe:
 And one rule that keeps the queue converging:
 
 - **Never silently skip a message the runner counts as pending.** The runner looks at reactions and nothing else. Any message your handler drops without leaving a reaction stays unhandled forever, so the runner keeps spawning `$COMMAND` every 5 minutes while the handler keeps finding nothing to do. Either process it and react, or keep your skip rules narrow enough that it never happens.
-- **Don't read an exit code as success.** A headless tool can exit 0 with a payload that says the run died — an interrupted API stream is the usual way. React `✅` to that and the task is marked done, the work is gone, and nothing retries. Check what the tool actually returned, not just how it exited.
 
 Sketch (Python, `slack_sdk`):
 
