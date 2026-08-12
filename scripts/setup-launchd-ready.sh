@@ -88,24 +88,18 @@ fi
 set -a
 source "$ENV_FILE"
 set +a
+# SleepDisabled is the only thing that survives a lid close; caffeinate and
+# other power assertions do not. Set it before the runner, which needs the
+# network that a short dark wake denies.
+/usr/bin/sudo /usr/bin/pmset -a disablesleep 1
+
 "$RUNNER_BIN"
 
-# Keep the machine awake while -- and only while -- a task is running.
-#
-# A lid-closed dark wake is short and the machine goes straight back to sleep,
-# freezing anything that needs longer. No power assertion overrides a lid
-# close, caffeinate included, so SleepDisabled is the only thing that works
-# here.
-#
-# This is re-evaluated every cycle from the process table, which doubles as
-# the cleanup path: a task that dies without clearing the flag leaves it set
-# for at most one cycle.
-#
-# Snapshot ps first and match in the shell. Piping into grep would always
-# report a hit, because grep's own argv carries \$COMMAND and ps sees it.
+# Release unless a task is running. Snapshot ps first -- piping into grep
+# always hits, because grep's own argv carries \$COMMAND.
 procs=\$(ps -Ao args=)
 case "\$procs" in
-    *"\$COMMAND"*) /usr/bin/sudo /usr/bin/pmset -a disablesleep 1 ;;
+    *"\$COMMAND"*) : ;;
     *)             /usr/bin/sudo /usr/bin/pmset -a disablesleep 0 ;;
 esac
 
